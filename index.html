@@ -448,16 +448,13 @@
       <div id="sp-list-wrap"><div id="sp-list"></div></div>
 
       <!-- Pump View sidebar -->
-      <div id="pump-filter-section">
-        <div class="pump-filter-header">
-          <span class="pump-filter-title">🔍 Filter by Pumps</span>
-          <div class="pump-filter-actions">
-            <button class="pf-link" id="pf-all">All</button>
-            <span style="color:var(--border2)">·</span>
-            <button class="pf-link" id="pf-none">None</button>
-          </div>
+      <div id="pump-highlight-section" class="sidebar-section" style="display:none;">
+        <div class="sidebar-section-title">Highlight Assignment</div>
+        <div class="mode-toggle">
+          <button class="pump-mode-btn active" data-mode="all">All</button>
+          <button class="pump-mode-btn" data-mode="assigned">Assigned</button>
+          <button class="pump-mode-btn" data-mode="unassigned">Unassigned</button>
         </div>
-        <div class="pump-filter-rows" id="pump-filter-rows"></div>
       </div>
 
       <div id="pump-sidebar-header" class="sidebar-section" style="display:none;align-items:center;gap:8px">
