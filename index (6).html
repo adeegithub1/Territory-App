@@ -1,0 +1,2061 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TerritoryIQ — India Sales Map v2</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+<style>
+  /* ── Reset & Tokens ─────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d;
+    --border: #30363d; --border2: #3d444d;
+    --text: #e6edf3; --text2: #8b949e; --text3: #656d76;
+    --accent: #58a6ff; --accent2: #1f6feb;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+    --radius: 8px; --sidebar-w: 300px; --header-h: 52px;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; overflow: hidden; }
+
+  /* ── Layout ─────────────────────────────────────────── */
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  #header {
+    height: var(--header-h); background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px; flex-shrink: 0; z-index: 100; flex-wrap: nowrap;
+  }
+  #header .logo { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 800; color: var(--text); letter-spacing: -0.5px; white-space: nowrap; }
+  #header .logo span { color: var(--accent); }
+  .header-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+  #body { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ─────────────────────────────────────────── */
+  #sidebar { width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+  .sidebar-section { border-bottom: 1px solid var(--border); padding: 10px 12px; }
+  .sidebar-section-title { font-size: 10px; font-weight: 600; letter-spacing: 1px; color: var(--text3); text-transform: uppercase; margin-bottom: 6px; }
+  #sp-list-wrap { flex: 1; overflow-y: auto; padding: 6px; }
+  #sp-list-wrap::-webkit-scrollbar { width: 4px; }
+  #sp-list-wrap::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  /* Salesperson items */
+  .sp-item { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: var(--radius); cursor: pointer; transition: background 0.12s; border: 1px solid transparent; }
+  .sp-item:hover { background: var(--surface2); }
+  .sp-item.active { background: rgba(88,166,255,0.08); border-color: rgba(88,166,255,0.25); }
+  .sp-swatch { width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0; cursor: pointer; border: 2px solid transparent; transition: transform 0.1s; }
+  .sp-swatch:hover { transform: scale(1.2); border-color: var(--text3); }
+  .sp-name { flex: 1; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sp-name input { background: var(--surface2); border: 1px solid var(--border2); color: var(--text); padding: 2px 5px; border-radius: 4px; font-size: 11px; font-family: inherit; width: 100%; outline: none; }
+  .sp-name input:focus { border-color: var(--accent); }
+  .sp-count { font-size: 10px; color: var(--text3); background: var(--surface2); padding: 1px 5px; border-radius: 10px; min-width: 20px; text-align: center; flex-shrink: 0; }
+  .sp-count.has-districts { color: var(--accent); background: rgba(88,166,255,0.1); }
+  .sp-actions { display: flex; gap: 3px; opacity: 0; transition: opacity 0.1s; }
+  .sp-item:hover .sp-actions { opacity: 1; }
+  .sp-action-btn { background: none; border: none; cursor: pointer; color: var(--text3); font-size: 11px; padding: 2px 3px; border-radius: 3px; transition: all 0.1s; }
+  .sp-action-btn:hover { color: var(--text); background: var(--surface2); }
+
+  /* ── Map Canvas ──────────────────────────────────────── */
+  #map-wrap { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
+  #map-svg { width: 100%; height: 100%; cursor: grab; }
+  #map-svg:active { cursor: grabbing; }
+
+  /* CRITICAL: All district styles use inline attrs — these CSS classes are fallback only */
+   #map-g { will-change: transform; } /* Yeh zoom/pan ka lag khatam karega */
+  
+  .district { cursor: pointer; shape-rendering: optimizeSpeed; }
+  .district:hover { stroke: #ffffff !important; stroke-width: 0.5px !important; }
+  
+  .state-boundary { pointer-events: none; shape-rendering: optimizeSpeed; }
+
+  /* ── Labels: completely removed ─────────────────────── */
+
+  /* ── Tooltip ─────────────────────────────────────────── */
+  #tooltip {
+    position: absolute; pointer-events: none;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border2); border-radius: 8px;
+    padding: 9px 13px; font-size: 12px; line-height: 1.6;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 999; display: none; max-width: 220px;
+  }
+  #tooltip .tt-district { font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--border); padding-bottom: 5px; margin-bottom: 5px; }
+  #tooltip .tt-row { display: flex; align-items: center; gap: 6px; color: var(--text2); }
+  #tooltip .tt-row strong { color: var(--text); }
+  #tooltip .tt-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+
+  /* ── Buttons ─────────────────────────────────────────── */
+  .btn { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border2); background: var(--surface2); color: var(--text); font-family: inherit; font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.12s; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .btn:hover { background: var(--bg); border-color: var(--text3); }
+  .btn:disabled { opacity: 0.35; cursor: default; }
+  .btn.primary { background: var(--accent2); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent); }
+  .btn.success { background: rgba(63,185,80,0.15); border-color: var(--green); color: var(--green); }
+  .btn.success:hover { background: rgba(63,185,80,0.25); }
+  .btn.danger { color: var(--red); border-color: rgba(248,81,73,0.3); }
+  .btn.danger:hover { background: rgba(248,81,73,0.1); }
+
+  /* ── Search ──────────────────────────────────────────── */
+  #search-wrap { position: relative; }
+  #search-input { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 7px 10px 7px 30px; border-radius: var(--radius); font-size: 12px; font-family: inherit; outline: none; transition: border-color 0.12s; }
+  #search-input:focus { border-color: var(--accent); }
+  #search-icon { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--text3); pointer-events: none; }
+  #search-results { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: var(--surface); border: 1px solid var(--border2); border-radius: var(--radius); z-index: 200; display: none; box-shadow: 0 8px 24px rgba(0,0,0,0.5); max-height: 200px; overflow-y: auto; }
+  #search-results.open { display: block; }
+  .search-result-item { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.1s; }
+  .search-result-item:last-child { border-bottom: none; }
+  .search-result-item:hover { background: var(--surface2); }
+  .search-result-item .sr-district { font-weight: 500; font-size: 12px; }
+  .search-result-item .sr-state { color: var(--text2); font-size: 10px; }
+
+  /* ── State Filter ────────────────────────────────────── */
+  #state-select, .form-select { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 9px; border-radius: var(--radius); font-family: inherit; font-size: 12px; outline: none; cursor: pointer; }
+  #state-select:focus { border-color: var(--accent); }
+  option { background: #161b22; }
+
+  /* ── Map Controls ────────────────────────────────────── */
+  #map-controls { position: absolute; right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+  #zoom-info { position: absolute; left: 12px; bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 10px; color: var(--text2); }
+
+  /* ── Stats Bar ───────────────────────────────────────── */
+  #stats-bar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .stat-item { padding: 5px 12px; text-align: center; border-right: 1px solid var(--border); }
+  .stat-item:last-child { border-right: none; }
+  .stat-val { font-size: 14px; font-weight: 700; font-family: 'Syne', sans-serif; color: var(--text); }
+  .stat-lbl { font-size: 9px; color: var(--text3); }
+
+  /* ── Color Picker (Photoshop-style) ─────────────────── */
+  .color-picker-popup {
+    position: fixed; z-index: 1000;
+    background: #1c2128; border: 1px solid #444c56;
+    border-radius: 12px; padding: 0;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+    display: none; width: 280px;
+    font-family: 'DM Sans', sans-serif;
+  }
+  .color-picker-popup.open { display: block; }
+  .cp-header {
+    padding: 10px 12px 0;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; font-weight: 600; color: #8b949e; letter-spacing: 0.8px; text-transform: uppercase;
+  }
+  .cp-close { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+  .cp-close:hover { color: #e6edf3; }
+  #cp-spectrum {
+    position: relative; margin: 10px 12px 0;
+    width: 256px; height: 160px; border-radius: 6px;
+    cursor: crosshair; flex-shrink: 0;
+    border: 1px solid #30363d;
+  }
+  #cp-spectrum-white {
+    position: absolute; inset: 0; border-radius: 6px;
+    background: linear-gradient(to right, #fff 0%, transparent 100%);
+  }
+  #cp-spectrum-black {
+    position: absolute; inset: 0; border-radius: 6px;
+    background: linear-gradient(to bottom, transparent 0%, #000 100%);
+  }
+  #cp-cursor {
+    position: absolute; width: 12px; height: 12px;
+    border-radius: 50%; border: 2px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  .cp-sliders { padding: 8px 12px 0; display: flex; align-items: center; gap: 8px; }
+  .cp-preview-box { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #444; flex-shrink: 0; }
+  .cp-slider-col { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+  #cp-hue-slider {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 12px; border-radius: 6px;
+    background: linear-gradient(to right,
+      #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%);
+    outline: none; cursor: pointer; border: 1px solid #444;
+  }
+  #cp-hue-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px;
+    border-radius: 50%; background: #fff; border: 2px solid #ccc;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5); cursor: pointer;
+  }
+  .cp-hex-row { display: flex; gap: 6px; padding: 8px 12px 0; align-items: center; }
+  .cp-hex-label { font-size: 10px; color: #8b949e; font-weight: 600; letter-spacing: 0.5px; width: 26px; flex-shrink: 0; }
+  #cp-hex-input {
+    flex: 1; background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    padding: 5px 8px; border-radius: 6px; font-size: 12px; font-family: 'DM Sans', monospace;
+    outline: none; letter-spacing: 1px;
+  }
+  #cp-hex-input:focus { border-color: #58a6ff; }
+  .cp-apply-btn {
+    background: #1f6feb; border: 1px solid #58a6ff; color: #fff;
+    padding: 5px 10px; border-radius: 6px; font-size: 11px;
+    font-family: inherit; cursor: pointer; font-weight: 600;
+  }
+  .cp-apply-btn:hover { background: #58a6ff; }
+  .cp-swatches-title { padding: 8px 12px 4px; font-size: 10px; color: #656d76; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; }
+  .cp-swatch-tabs { display: flex; gap: 0; padding: 0 12px 6px; border-bottom: 1px solid #21262d; }
+  .cp-swatch-tab { padding: 3px 8px; font-size: 10px; font-weight: 500; background: none; border: 1px solid transparent; color: #8b949e; cursor: pointer; border-radius: 4px; font-family: inherit; }
+  .cp-swatch-tab.active { background: #21262d; color: #e6edf3; border-color: #30363d; }
+  .cp-palette-grid { display: grid; gap: 3px; padding: 8px 12px 10px; grid-template-columns: repeat(12, 1fr); }
+  .cp-swatch {
+    width: 18px; height: 18px; border-radius: 3px; cursor: pointer;
+    border: 1px solid transparent; transition: transform 0.1s, border-color 0.1s;
+  }
+  .cp-swatch:hover { transform: scale(1.25); border-color: #fff; z-index: 1; }
+  .cp-swatch.active-swatch { border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,0.5); }
+  .cp-recent-row { display: flex; gap: 3px; padding: 0 12px 10px; flex-wrap: wrap; }
+  .cp-recent-dot { width: 18px; height: 18px; border-radius: 3px; cursor: pointer; border: 1px solid #30363d; transition: transform 0.1s; }
+  .cp-recent-dot:hover { transform: scale(1.2); border-color: #fff; }
+
+  /* ── Modal ───────────────────────────────────────────── */
+  #modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: none; align-items: center; justify-content: center; z-index: 500; backdrop-filter: blur(4px); }
+  #modal-overlay.open { display: flex; }
+  #modal { background: var(--surface); border: 1px solid var(--border2); border-radius: 12px; padding: 18px; width: 380px; max-width: 95vw; box-shadow: 0 24px 64px rgba(0,0,0,0.7); animation: pop 0.15s ease; max-height: 90vh; display: flex; flex-direction: column; }
+  @keyframes pop { from { transform: scale(0.95); opacity: 0; } }
+  #modal h3 { font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 700; margin-bottom: 3px; }
+  #modal .modal-state { color: var(--text2); font-size: 11px; margin-bottom: 12px; }
+  .modal-sp-list { flex: 1; overflow-y: auto; display: grid; gap: 3px; margin-bottom: 12px; max-height: 280px; }
+  .modal-sp-list::-webkit-scrollbar { width: 4px; }
+  .modal-sp-list::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  .modal-sp-btn { display: flex; align-items: center; gap: 9px; padding: 8px 9px; border-radius: 6px; background: var(--surface2); border: 1px solid transparent; color: var(--text); cursor: pointer; font-family: inherit; font-size: 12px; text-align: left; transition: all 0.1s; }
+  .modal-sp-btn:hover { border-color: var(--border2); background: var(--bg); }
+  .modal-sp-btn.selected { border-color: var(--accent); background: rgba(88,166,255,0.08); }
+  .modal-sp-dot { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+  .modal-sp-name { flex: 1; }
+  .modal-sp-cnt { font-size: 10px; color: var(--text3); }
+  .modal-actions { display: flex; gap: 7px; justify-content: flex-end; flex-shrink: 0; }
+
+  /* ── Loading ─────────────────────────────────────────── */
+  #loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: var(--bg); z-index: 999; }
+  .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading .load-text { color: var(--text2); font-size: 12px; }
+  #loading .load-title { font-family: 'Syne', sans-serif; font-size: 15px; color: var(--text); }
+
+  /* ── Notification ────────────────────────────────────── */
+  #notif { position: fixed; top: 58px; right: 14px; background: var(--surface); border: 1px solid var(--border2); border-radius: 8px; padding: 9px 13px; font-size: 12px; color: var(--text); box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 9999; display: none; animation: slideIn 0.2s ease; }
+  @keyframes slideIn { from { transform: translateX(16px); opacity: 0; } }
+
+  /* ── Processing Overlay ──────────────────────────────── */
+  #processing-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: none; align-items: center; justify-content: center; z-index: 9000; flex-direction: column; gap: 12px; }
+  #processing-overlay.open { display: flex; }
+  #processing-overlay .proc-text { color: var(--text); font-size: 13px; }
+
+  /* ── Mode toggle ─────────────────────────────────────── */
+  .mode-toggle { display: flex; border: 1px solid var(--border2); border-radius: 6px; overflow: hidden; }
+  .mode-btn { padding: 4px 8px; font-size: 10px; font-weight: 500; background: none; border: none; color: var(--text2); cursor: pointer; transition: all 0.1s; font-family: inherit; }
+  .mode-btn.active { background: var(--accent2); color: #fff; }
+  .mode-btn:hover:not(.active) { background: var(--surface2); color: var(--text); }
+  .tag { font-size: 10px; background: rgba(88,166,255,0.15); color: var(--accent); padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+  #undo-btn:disabled { opacity: 0.35; cursor: default; }
+
+  /* ── View Toggle ──────────────────────────────────────── */
+  #view-toggle-bar {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 200; display: flex; gap: 0;
+    background: var(--surface); border: 1px solid var(--border2);
+    border-radius: 8px; overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  .view-tab {
+    padding: 7px 20px; font-size: 12px; font-weight: 600;
+    background: none; border: none; color: var(--text2);
+    cursor: pointer; font-family: inherit; transition: all 0.15s;
+    letter-spacing: 0.3px;
+  }
+  .view-tab.active { background: var(--accent2); color: #fff; }
+  .view-tab:hover:not(.active) { background: var(--surface2); color: var(--text); }
+
+  /* ── Pump Range Items ─────────────────────────────────── */
+  .pump-range-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: var(--radius);
+    border: 1px solid transparent;
+  }
+  .pump-range-item:hover { background: var(--surface2); }
+  .pump-range-swatch {
+    width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0;
+    cursor: pointer; border: 2px solid transparent; transition: transform 0.1s;
+  }
+  .pump-range-swatch:hover { transform: scale(1.2); border-color: var(--text3); }
+  .pump-range-label { flex: 1; font-size: 12px; font-weight: 500; color: var(--text); }
+  .pump-range-count { font-size: 10px; color: var(--accent); background: rgba(88,166,255,0.1); padding: 1px 5px; border-radius: 10px; min-width: 20px; text-align: center; flex-shrink: 0; }
+
+  /* ── Pump Filter ──────────────────────────────────────── */
+  #pump-filter-section { border-bottom: 1px solid var(--border); padding: 10px 12px; display: none; }
+  #pump-filter-section.visible { display: block; }
+  .pump-filter-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+  .pump-filter-title { font-size: 10px; font-weight: 600; letter-spacing: 1px; color: var(--text3); text-transform: uppercase; }
+  .pump-filter-actions { display: flex; gap: 5px; }
+  .pf-link { font-size: 10px; color: var(--accent); cursor: pointer; background: none; border: none; font-family: inherit; padding: 0; }
+  .pf-link:hover { text-decoration: underline; }
+  .pump-filter-rows { display: flex; flex-direction: column; gap: 2px; }
+  .pump-filter-row {
+    display: flex; align-items: center; gap: 7px;
+    padding: 4px 6px; border-radius: 5px; cursor: pointer;
+    transition: background 0.1s; user-select: none;
+  }
+  .pump-filter-row:hover { background: var(--surface2); }
+  .pump-filter-row input[type=checkbox] { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; flex-shrink: 0; }
+  .pf-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .pf-label { flex: 1; font-size: 11px; color: var(--text); }
+  .pf-count { font-size: 10px; color: var(--text3); }
+  .pump-filter-row.unchecked .pf-label { color: var(--text3); }
+
+  /* ── Pump Legend ──────────────────────────────────────── */
+  #pump-legend {
+    position: absolute; bottom: 40px; left: 12px; z-index: 200;
+    background: rgba(22,27,34,0.92); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; display: none;
+    backdrop-filter: blur(4px);
+  }
+  #pump-legend.visible { display: block; }
+  .pump-legend-title { font-size: 9px; font-weight: 600; color: var(--text3); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
+  .pump-legend-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+  .pump-legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .pump-legend-lbl { font-size: 10px; color: var(--text2); }
+
+  /* ── Live Sync ──────────────────────────────────────── */
+  #sync-pill {
+    display:flex; align-items:center; gap:6px;
+    padding:4px 10px; border-radius:20px;
+    border:1px solid var(--border2); background:var(--surface2);
+    font-size:10px; color:var(--text3); cursor:pointer;
+    transition:all 0.15s; white-space:nowrap; flex-shrink:0;
+  }
+  #sync-pill:hover { border-color:var(--text3); color:var(--text); }
+  #sync-pill.live  { border-color:rgba(63,185,80,0.4);  color:#3fb950; background:rgba(63,185,80,0.07); }
+  #sync-pill.saving{ border-color:rgba(210,153,34,0.4); color:#d29922; background:rgba(210,153,34,0.07); }
+  #sync-pill.error { border-color:rgba(248,81,73,0.4);  color:#f85149; background:rgba(248,81,73,0.07); }
+  #sync-dot { width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0; }
+  #sync-pill.saving #sync-dot { animation:sdpulse 0.7s infinite; }
+  @keyframes sdpulse { 0%,100%{opacity:1} 50%{opacity:0.2} }
+  #token-overlay {
+    position:fixed; inset:0; background:rgba(0,0,0,0.75);
+    display:none; align-items:center; justify-content:center;
+    z-index:2000; backdrop-filter:blur(6px);
+  }
+  #token-overlay.open { display:flex; }
+  #token-modal {
+    background:#1c2128; border:1px solid #444c56; border-radius:14px;
+    padding:24px; width:440px; max-width:95vw;
+    box-shadow:0 24px 64px rgba(0,0,0,0.85);
+  }
+  #token-modal h2 { font-family:'Syne',sans-serif; font-size:16px; font-weight:800; margin-bottom:6px; }
+  #token-modal p  { color:var(--text2); font-size:12px; line-height:1.7; margin-bottom:14px; }
+  #token-modal label { font-size:10px; font-weight:600; color:var(--text3); display:block; margin-bottom:5px; letter-spacing:0.6px; text-transform:uppercase; }
+  #token-modal input { width:100%; background:var(--surface2); border:1px solid var(--border2); color:var(--text); padding:9px 11px; border-radius:8px; font-family:monospace; font-size:12px; outline:none; margin-bottom:14px; }
+  #token-modal input:focus { border-color:var(--accent); }
+  .token-note { background:rgba(88,166,255,0.07); border:1px solid rgba(88,166,255,0.2); border-radius:8px; padding:10px 12px; font-size:11px; color:var(--text2); line-height:1.7; margin-bottom:16px; }
+  .token-note code { background:rgba(255,255,255,0.08); padding:1px 5px; border-radius:4px; font-family:monospace; color:var(--accent); }
+  .token-note a { color:var(--accent); }
+  .token-actions { display:flex; gap:8px; justify-content:flex-end; }
+  #update-toast {
+    position:fixed; bottom:56px; left:50%; transform:translateX(-50%);
+    background:#1c2128; border:1px solid #3fb950; color:#3fb950;
+    border-radius:20px; padding:7px 18px; font-size:12px; font-weight:500;
+    z-index:9999; display:none; box-shadow:0 8px 24px rgba(0,0,0,0.6);
+    animation:toastUp 0.25s ease;
+  }
+  @keyframes toastUp { from{opacity:0;transform:translateX(-50%) translateY(6px)} }
+</style>
+
+<script src="./INDIA_DISTRICTS.js"></script>
+
+</head>
+<body>
+<div id="app">
+
+  <div id="header">
+    <div class="logo">Territory<span>IQ</span></div>
+    <span class="tag">India v2</span>
+    <div class="header-actions">
+      <button class="btn" id="undo-btn" disabled title="Ctrl+Z">↩ Undo</button>
+      <button class="btn" id="reset-btn">⟳ Reset</button>
+      <button class="btn success" id="excel-btn">📊 Upload Excel</button>
+      <input type="file" id="excel-file" accept=".xlsx,.xls,.csv" style="display:none" />
+      <button class="btn success" id="dl-excel-btn">⬇ Download Excel</button>
+      <button class="btn primary" id="dl-png-btn">🖼 Download PNG</button>
+      <div id="sync-pill" title="Live sync status — click to configure saving">
+        <div id="sync-dot"></div>
+        <span id="sync-text">Loading…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin token modal (only you need this) -->
+  <div id="token-overlay">
+    <div id="token-modal">
+      <h2>🔑 Admin: Enable Saving</h2>
+      <p>You are the <strong>map owner</strong>. Enter your GitHub token once to enable saving. Everyone else just opens the link — no setup needed.</p>
+      <div class="token-note">
+        <strong>Get a token (2 min):</strong><br>
+        1. Go to <a href="https://github.com/settings/tokens/new" target="_blank">github.com/settings/tokens/new</a><br>
+        2. Name: <code>TerritoryIQ</code> &nbsp;|&nbsp; Expiry: <code>No expiration</code><br>
+        3. Check only <code>gist</code> scope → <strong>Generate token</strong> → paste below
+      </div>
+      <label>Your GitHub Token</label>
+      <input type="password" id="admin-token-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="off" />
+      <div class="token-actions">
+        <button class="btn" id="token-cancel-btn">Cancel</button>
+        <button class="btn primary" id="token-save-btn">Enable Saving ✓</button>
+      </div>
+    </div>
+  </div>
+  <div id="update-toast">🔄 Map updated</div>
+
+  <div id="body">
+
+    <div id="sidebar">
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Search District</div>
+        <div id="search-wrap">
+          <svg id="search-icon" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input id="search-input" type="text" placeholder="Type district or state…" autocomplete="off" />
+          <div id="search-results"></div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">State View</div>
+        <select id="state-select">
+          <option value="">🗺 All India</option>
+        </select>
+      </div>
+
+
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Highlight</div>
+        <div class="mode-toggle">
+          <button class="mode-btn active" data-mode="all">All</button>
+          <button class="mode-btn" data-mode="selected">Selected SP</button>
+          <button class="mode-btn" data-mode="unassigned">Unassigned</button>
+        </div>
+      </div>
+
+      <!-- SP View sidebar -->
+      <div id="sp-sidebar-header" class="sidebar-section" style="display:flex;align-items:center;gap:8px">
+        <div class="sidebar-section-title" style="margin:0;flex:1">Salespeople (50)</div>
+        <button class="btn" id="bulk-assign-btn" style="font-size:10px;padding:3px 7px">Bulk Assign</button>
+      </div>
+      <div id="sp-list-wrap"><div id="sp-list"></div></div>
+
+      <!-- Pump View sidebar -->
+      <div id="pump-filter-section">
+        <div class="pump-filter-header">
+          <span class="pump-filter-title">🔍 Filter by Pumps</span>
+          <div class="pump-filter-actions">
+            <button class="pf-link" id="pf-all">All</button>
+            <span style="color:var(--border2)">·</span>
+            <button class="pf-link" id="pf-none">None</button>
+          </div>
+        </div>
+        <div class="pump-filter-rows" id="pump-filter-rows"></div>
+      </div>
+
+      <div id="pump-sidebar-header" class="sidebar-section" style="display:none;align-items:center;gap:8px">
+        <div class="sidebar-section-title" style="margin:0;flex:1">Pump Ranges</div>
+      </div>
+      <div id="pump-list-wrap" style="display:none;flex:1;overflow-y:auto;padding:6px"><div id="pump-list"></div></div>
+    </div>
+
+    <div id="map-wrap">
+      <div id="loading">
+        <div class="load-title">TerritoryIQ</div>
+        <div class="spinner"></div>
+        <div class="load-text" id="load-text-msg">Loading India district map…</div>
+      </div>
+
+      <div id="view-toggle-bar">
+        <button class="view-tab active" data-view="sp">👤 Salesperson</button>
+        <button class="view-tab" data-view="pump">⛽ Pump Population</button>
+      </div>
+
+      <svg id="map-svg"></svg>
+
+      <div id="pump-legend">
+        <div class="pump-legend-title">⛽ Pump Population</div>
+      </div>
+
+      <div id="stats-bar">
+        <div class="stat-item"><div class="stat-val" id="stat-total">—</div><div class="stat-lbl">Districts</div></div>
+        <div class="stat-item"><div class="stat-val" id="stat-assigned">0</div><div class="stat-lbl">Assigned</div></div>
+        <div class="stat-item"><div class="stat-val" id="stat-coverage">0%</div><div class="stat-lbl">Coverage</div></div>
+        <div class="stat-item"><div class="stat-val" id="stat-excel">—</div><div class="stat-lbl">Excel Rows</div></div>
+      </div>
+
+      <div id="tooltip">
+        <div class="tt-district"></div>
+        <div class="tt-row" id="tt-sp-row"><span class="tt-dot" id="tt-dot"></span><span>SP: </span><strong id="tt-sp"></strong></div>
+        <div class="tt-row">👥 Customers: <strong id="tt-cust"></strong></div>
+        <div class="tt-row">⛽ Pumps: <strong id="tt-pumps"></strong></div>
+      </div>
+
+      <div id="map-controls">
+        <button class="btn" id="zoom-in">＋</button>
+        <button class="btn" id="zoom-out">－</button>
+        <button class="btn" id="zoom-reset">⤢</button>
+      </div>
+      <div id="zoom-info">Scroll to zoom • Drag to pan • Click to assign</div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-overlay">
+  <div id="modal">
+    <h3 id="modal-district-name">District</h3>
+    <div class="modal-state" id="modal-state-name"></div>
+    <div class="modal-sp-list" id="modal-sp-list"></div>
+    <div id="modal-data-fields" style="display:flex;gap:10px;margin-bottom:12px;margin-top:2px">
+      <div style="flex:1">
+        <label style="font-size:10px;color:var(--text3);font-weight:600;letter-spacing:0.8px;text-transform:uppercase;display:block;margin-bottom:4px">👥 Customers</label>
+        <input type="number" id="modal-customers" min="0" placeholder="0"
+          style="width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);
+                 padding:7px 10px;border-radius:6px;font-family:inherit;font-size:13px;outline:none;" />
+      </div>
+      <div style="flex:1">
+        <label style="font-size:10px;color:var(--text3);font-weight:600;letter-spacing:0.8px;text-transform:uppercase;display:block;margin-bottom:4px">⛽ Pumps</label>
+        <input type="number" id="modal-pumps" min="0" placeholder="0"
+          style="width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);
+                 padding:7px 10px;border-radius:6px;font-family:inherit;font-size:13px;outline:none;" />
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn danger" style="font-size:11px" id="modal-unassign">Unassign</button>
+      <button class="btn" style="font-size:11px" id="modal-cancel">Cancel</button>
+      <button class="btn primary" style="font-size:11px" id="modal-assign">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="color-picker-popup" id="color-picker">
+  <div class="cp-header">
+    <span>Color Picker</span>
+    <button class="cp-close" id="color-cancel">&#x2715;</button>
+  </div>
+  <div id="cp-spectrum">
+    <div id="cp-spectrum-white"></div>
+    <div id="cp-spectrum-black"></div>
+    <div id="cp-cursor"></div>
+  </div>
+  <div class="cp-sliders">
+    <div class="cp-preview-box" id="cp-preview"></div>
+    <div class="cp-slider-col">
+      <input type="range" id="cp-hue-slider" min="0" max="360" value="0" />
+    </div>
+  </div>
+  <div class="cp-hex-row">
+    <span class="cp-hex-label">#HEX</span>
+    <input type="text" id="cp-hex-input" maxlength="7" placeholder="e.g. ff5733" />
+    <button class="cp-apply-btn" id="cp-apply">Apply</button>
+  </div>
+  <div class="cp-swatches-title">Swatches</div>
+  <div class="cp-swatch-tabs">
+    <button class="cp-swatch-tab active" data-tab="basic">Basic</button>
+    <button class="cp-swatch-tab" data-tab="material">Material</button>
+    <button class="cp-swatch-tab" data-tab="pastel">Pastel</button>
+    <button class="cp-swatch-tab" data-tab="recent">Recent</button>
+  </div>
+  <div id="cp-palette-container">
+    <div class="cp-palette-grid" id="cp-palette-grid"></div>
+  </div>
+</div>
+
+<div id="processing-overlay">
+  <div class="spinner"></div>
+  <div class="proc-text" id="proc-text">Processing…</div>
+</div>
+
+<div id="notif"></div>
+
+<script>
+'use strict';
+// ══════════════════════════════════════════════════════════
+//  CONSTANTS
+// ══════════════════════════════════════════════════════════
+const SALESPEOPLE_NAMES = [
+  "Aarav Sharma","Priya Patel","Rohit Verma","Sunita Gupta","Vikram Singh",
+  "Anjali Mehta","Deepak Joshi","Kavita Rao","Manish Kumar","Neha Agarwal",
+  "Arjun Nair","Pooja Iyer","Sanjay Mishra","Ritu Saxena","Anil Pandey",
+  "Divya Chopra","Rakesh Yadav","Shreya Malhotra","Vijay Srivastava","Meera Pillai",
+  "Suresh Reddy","Ananya Krishnan","Girish Desai","Lalita Hegde","Rajesh Tiwari",
+  "Sneha Bose","Harish Chauhan","Preeti Dubey","Mohan Jain","Usha Kapoor",
+  "Siddharth Bhatt","Nisha Banerjee","Arun Patil","Swati Shah","Tarun Garg",
+  "Kamala Nambiar","Devendra Thakur","Jyoti Sinha","Ashok Kulkarni","Rani Bhat",
+  "Pavan Menon","Geeta Shukla","Naresh Solanki","Prabhav Rao","Chitra Venkat",
+  "Bharat Tomar","Sarita Lal","Mahesh Pandya","Tanvi Oberoi","Vikas Deshpande"
+];
+
+const COLOR_PALETTE = [
+  "#4e9af1","#ef6c6c","#52c974","#ffc74a","#a78bfa",
+  "#fb923c","#38bdf8","#f472b6","#86efac","#d4a017",
+  "#818cf8","#f97316","#22d3ee","#fb7185","#4ade80",
+  "#facc15","#c084fc","#f87171","#34d399","#f59e0b",
+  "#60a5fa","#e879f9","#2dd4bf","#ff6b8a","#a3e635",
+  "#fdba74","#67e8f9","#f9a8d4","#6ee7b7","#e8b84b",
+  "#a5b4fc","#fca5a5","#6fcf97","#f2d16a","#c4b5fd",
+  "#fc9668","#5de8ff","#ff8fa3","#7fe8b5","#ffe566",
+  "#9ca3ff","#f472b6","#50e3c2","#ffcc33","#d97dff",
+  "#ff9d5c","#36d9e0","#ff80aa","#88e5a8","#ffd147"
+];
+
+const UNASSIGNED_FILL = '#1e2836';
+const BG_COLOR        = '#0d1117';
+
+let geoData      = null;
+let allDistricts = [];
+let stateNames   = [];
+let districtMap  = {};   
+let assignments  = {};   
+let spColors     = {};   
+let spNames      = {};   
+let districtData = {};   
+let history = [];
+const MAX_HISTORY = 50;
+
+let activeSP       = null;
+let highlightMode  = 'all';
+let currentState   = '';
+
+let selectedDistrictId = null;
+let pendingSpIndex     = null;
+let colorPickerTarget  = null;
+
+let zoom, svgSel, gSel, pathGen;
+let currentTransform = d3.zoomIdentity;
+
+function normalize(name) {
+  return String(name || '').toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function initSP() {
+  for (let i = 0; i < 50; i++) {
+    spColors[i] = COLOR_PALETTE[i % COLOR_PALETTE.length];
+    spNames[i]  = SALESPEOPLE_NAMES[i];
+  }
+  loadFromStorage();
+}
+
+function saveToStorage() {
+  try {
+    localStorage.setItem('tiq2_assignments',  JSON.stringify(assignments));
+    localStorage.setItem('tiq2_spColors',     JSON.stringify(spColors));
+    localStorage.setItem('tiq2_spNames',      JSON.stringify(spNames));
+    localStorage.setItem('tiq2_districtData', JSON.stringify(districtData));
+  } catch(e) {}
+  scheduleCloudSave();
+}
+function loadFromStorage() {
+  try {
+    const a = localStorage.getItem('tiq2_assignments');
+    const c = localStorage.getItem('tiq2_spColors');
+    const n = localStorage.getItem('tiq2_spNames');
+    const d = localStorage.getItem('tiq2_districtData');
+    if (a) assignments  = JSON.parse(a);
+    if (c) spColors     = JSON.parse(c);
+    if (n) spNames      = JSON.parse(n);
+    if (d) districtData = JSON.parse(d);
+  } catch(e) {}
+}
+
+function pushHistory(action) {
+  history.push(action);
+  if (history.length > MAX_HISTORY) history.shift();
+  document.getElementById('undo-btn').disabled = false;
+}
+
+function undo() {
+  if (!history.length) return;
+  const action = history.pop();
+  if (action.type === 'assign') {
+    if (action.prev === undefined) delete assignments[action.id];
+    else assignments[action.id] = action.prev;
+  } else if (action.type === 'bulk') {
+    action.changes.forEach(({ id, prev }) => {
+      if (prev === undefined) delete assignments[id]; else assignments[id] = prev;
+    });
+  }
+  saveToStorage();
+  refreshMap();
+  renderSPList();
+  if (!history.length) document.getElementById('undo-btn').disabled = true;
+  notify('Undone');
+}
+
+// ══════════════════════════════════════════════════════════
+//  DATA LOADING (Bypassing CORS via JS variable)
+// ══════════════════════════════════════════════════════════
+async function loadGeoJSON() {
+  setLoadMsg('Loading map data (700+ districts)…');
+  
+  if (typeof indiaGeoData !== 'undefined' && indiaGeoData.features) {
+    indiaGeoData.features = indiaGeoData.features.map((f, i) => {
+      const p = f.properties || {};
+      const dname = (p.dtname || p.DISTRICT || p.district || p.District || p.NAME_2 || p.name || p.distname || `District ${i}`).trim();
+      const sname = (p.stname || p.STATE || p.state || p.State || p.NAME_1 || p.statename || p.st_nm || 'Unknown State').trim();
+      
+      f.properties._district = dname;
+      f.properties._state    = sname;
+      f.properties._id       = `${sname}__${dname}__${i}`;
+      return f;
+    });
+    return indiaGeoData;
+  } else {
+    console.error("Map data not found! Ensure INDIA_DISTRICTS.js is loaded correctly.");
+    document.getElementById('loading').innerHTML = `
+      <div style="text-align:center;padding:24px;max-width:380px">
+        <div style="font-size:28px;margin-bottom:10px">⚠️</div>
+        <div style="color:#e6edf3">Map data not found!</div>
+        <div style="color:#8b949e;font-size:12px;margin-top:10px">Please ensure you have renamed the JSON file to <b>INDIA_DISTRICTS.js</b> and added <code>const indiaGeoData = </code> inside it as instructed.</div>
+      </div>`;
+    return null;
+  }
+}
+
+function setLoadMsg(msg) {
+  const el = document.getElementById('load-text-msg');
+  if (el) el.textContent = msg;
+}
+
+// ══════════════════════════════════════════════════════════
+//  MAP BUILD
+// ══════════════════════════════════════════════════════════
+async function initMap() {
+  const data = await loadGeoJSON();
+  if (!data) return;
+
+  geoData = data;
+  setLoadMsg('Processing districts…');
+
+  allDistricts = geoData.features.map(f => ({
+    id:    f.properties._id,
+    name:  f.properties._district,
+    state: f.properties._state,
+    normName:  normalize(f.properties._district),
+    normState: normalize(f.properties._state),
+  }));
+
+  allDistricts.forEach(d => {
+    const key = d.normName;
+    if (!districtMap[key]) districtMap[key] = [];
+    districtMap[key].push(d.id);
+  });
+
+  const stateSet = new Set(allDistricts.map(d => d.state).filter(Boolean));
+  stateNames = Array.from(stateSet).sort();
+  const stSel = document.getElementById('state-select');
+  stateNames.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s; opt.textContent = s; stSel.appendChild(opt);
+  });
+
+  document.getElementById('stat-total').textContent = allDistricts.length;
+
+  setLoadMsg('Building SVG…');
+  await new Promise(r => setTimeout(r, 30));
+
+  buildSVG();
+  document.getElementById('loading').style.display = 'none';
+  renderSPList();
+  updateStats();
+}
+
+function buildSVG() {
+  const wrap = document.getElementById('map-wrap');
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+
+  svgSel = d3.select('#map-svg');
+  svgSel.attr('viewBox', `0 0 ${W} ${H}`)
+        .style('background', BG_COLOR);
+
+  // 🛑 MAGIC FIX 1: D3 ko force karein ki wo sirf India ke coordinates par zoom kare 
+  // (Yeh kisi bhi anomalous/galat coordinate ko screen kharab karne se rokega)
+  const indiaBBox = {
+    type: "FeatureCollection",
+    features: [{
+      type: "Feature",
+      geometry: { type: "Polygon", coordinates: [[[68, 6], [98, 6], [98, 38], [68, 38], [68, 6]]] }
+    }]
+  };
+  const proj = d3.geoMercator().fitSize([W, H], indiaBBox);
+
+  // 🛑 MAGIC FIX 2: Flat Transform
+  // Yeh D3 ke spherical engine ko bypass karta hai taaki ulte polygons (Lakshadweep)
+  // screen ko poori tarah block na karein aur normal flat shape ki tarah draw hon.
+  const flatTransform = d3.geoTransform({
+    point: function(x, y) {
+      const p = proj([x, y]);
+      if (p) this.stream.point(p[0], p[1]);
+    }
+  });
+  
+  // Ab original projection ki jagah flatTransform use hoga
+  pathGen = d3.geoPath().projection(flatTransform);
+
+  zoom = d3.zoom()
+    .scaleExtent([0.7, 30])
+    .on('zoom', e => {
+      currentTransform = e.transform;
+      gSel.attr('transform', e.transform);
+    });
+
+  svgSel.call(zoom);
+  gSel = svgSel.append('g').attr('id', 'map-g');
+
+  const distG = gSel.append('g').attr('id', 'districts-g');
+  distG.selectAll('path.district')
+    .data(geoData.features)
+    .join('path')
+    .attr('class', 'district')
+    .attr('id', d => 'dp-' + safeId(d.properties._id))
+    .attr('d', pathGen)
+    .attr('fill',         d => getDistrictFill(d.properties._id))
+    .attr('stroke',       'rgba(255,255,255,0.15)')
+    .attr('stroke-width', '0.15') 
+    .style('cursor', 'pointer')
+    .on('mousemove', (event, d) => {
+      showTooltip(event, d);
+    })
+    .on('mouseleave', (event, d) => {
+      hideTooltip();
+    })
+    .on('click', (event, d) => openAssignModal(d));
+
+}
+
+
+
+// ══════════════════════════════════════════════════════════
+//  VIEW MODE: 'sp' or 'pump'
+// ══════════════════════════════════════════════════════════
+let currentView = 'sp';
+
+// Pump filter — set of range indices that are ACTIVE (shown). null = all shown
+let pumpFilterActive = null; // null means no filter (all visible)
+
+// Pump population ranges (editable colors)
+const PUMP_RANGES = [
+  { label: '0',        min: 0,   max: 0,    color: '#2d333b' },
+  { label: '1 – 10',   min: 1,   max: 10,   color: '#1a4a6b' },
+  { label: '11 – 25',  min: 11,  max: 25,   color: '#1565c0' },
+  { label: '26 – 50',  min: 26,  max: 50,   color: '#0288d1' },
+  { label: '51 – 100', min: 51,  max: 100,  color: '#00acc1' },
+  { label: '101 – 200',min: 101, max: 200,  color: '#26a69a' },
+  { label: '201 – 500',min: 201, max: 500,  color: '#43a047' },
+  { label: '500+',     min: 501, max: Infinity, color: '#f9a825' },
+  { label: 'No Data',  min: -1,  max: -1,   color: '#3d444d' },
+];
+
+function getPumpRangeIdx(id) {
+  const dd = districtData[id] || {};
+  if (dd.pumps === undefined || dd.pumps === '') return 8; // No Data
+  const n = parseInt(dd.pumps) || 0;
+  for (let i = 0; i < PUMP_RANGES.length - 1; i++) {
+    if (n >= PUMP_RANGES[i].min && n <= PUMP_RANGES[i].max) return i;
+  }
+  return 8;
+}
+
+function getPumpColor(id) {
+  return PUMP_RANGES[getPumpRangeIdx(id)].color;
+}
+
+function refreshMap() {
+  if (!gSel) return;
+
+  gSel.selectAll('path.district').each(function(d) {
+    const id    = d.properties._id;
+    const spIdx = assignments[id];
+
+    let fill, opacity = 1;
+
+    if (currentView === 'pump') {
+      fill = getPumpColor(id);
+      // Apply filter: dim districts whose range is not in active filter
+      if (pumpFilterActive !== null) {
+        const ridx = getPumpRangeIdx(id);
+        opacity = pumpFilterActive.has(ridx) ? 1 : 0.06;
+      }
+    } else {
+      fill = spIdx !== undefined ? (spColors[spIdx] || '#888') : UNASSIGNED_FILL;
+      if (highlightMode === 'selected' && activeSP !== null)
+        opacity = (spIdx === activeSP) ? 1 : 0.12;
+      else if (highlightMode === 'unassigned')
+        opacity = (spIdx === undefined) ? 1 : 0.15;
+    }
+
+    d3.select(this)
+      .attr('fill', fill)
+      .attr('opacity', opacity);
+  });
+  updateStats();
+
+  if (currentView === 'pump') {
+    renderPumpLegend();
+    renderPumpList();
+  }
+}
+
+function getDistrictFill(id) {
+  if (currentView === 'pump') return getPumpColor(id);
+  const spIdx = assignments[id];
+  return spIdx !== undefined ? (spColors[spIdx] || '#888') : UNASSIGNED_FILL;
+}
+
+// ══════════════════════════════════════════════════════════
+//  PUMP SIDEBAR + LEGEND
+// ══════════════════════════════════════════════════════════
+function renderPumpFilter() {
+  const container = document.getElementById('pump-filter-rows');
+  container.innerHTML = '';
+
+  const counts = Array(PUMP_RANGES.length).fill(0);
+  if (allDistricts) {
+    allDistricts.forEach(d => { counts[getPumpRangeIdx(d.id)]++; });
+  }
+
+  PUMP_RANGES.forEach((range, idx) => {
+    const isChecked = pumpFilterActive === null || pumpFilterActive.has(idx);
+    const row = document.createElement('label');
+    row.className = 'pump-filter-row' + (isChecked ? '' : ' unchecked');
+    row.innerHTML = `
+      <input type="checkbox" data-ridx="${idx}" ${isChecked ? 'checked' : ''} />
+      <span class="pf-dot" style="background:${range.color}"></span>
+      <span class="pf-label">${range.label}</span>
+      <span class="pf-count">${counts[idx]}</span>`;
+    container.appendChild(row);
+  });
+
+  container.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const allChecked = [...container.querySelectorAll('input[type=checkbox]')].every(c => c.checked);
+      if (allChecked) {
+        pumpFilterActive = null;
+      } else {
+        pumpFilterActive = new Set();
+        container.querySelectorAll('input[type=checkbox]').forEach(c => {
+          if (c.checked) pumpFilterActive.add(parseInt(c.dataset.ridx));
+        });
+      }
+      // Update row style
+      container.querySelectorAll('.pump-filter-row').forEach((row, i) => {
+        const cb2 = row.querySelector('input');
+        row.classList.toggle('unchecked', !cb2.checked);
+      });
+      refreshMap();
+    });
+  });
+}
+
+function renderPumpFilter() {
+  const container = document.getElementById('pump-filter-rows');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const counts = Array(PUMP_RANGES.length).fill(0);
+  if (allDistricts) {
+    allDistricts.forEach(d => { counts[getPumpRangeIdx(d.id)]++; });
+  }
+
+  PUMP_RANGES.forEach((range, idx) => {
+    const isChecked = pumpFilterActive === null || pumpFilterActive.has(idx);
+    const row = document.createElement('label');
+    row.className = 'pump-filter-row' + (isChecked ? '' : ' unchecked');
+    row.innerHTML = `
+      <input type="checkbox" data-ridx="${idx}" ${isChecked ? 'checked' : ''} />
+      <span class="pf-dot" style="background:${range.color}"></span>
+      <span class="pf-label">${range.label}</span>
+      <span class="pf-count">${counts[idx]}</span>`;
+    container.appendChild(row);
+  });
+
+  container.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const allChecked = [...container.querySelectorAll('input[type=checkbox]')].every(c => c.checked);
+      if (allChecked) {
+        pumpFilterActive = null;
+      } else {
+        pumpFilterActive = new Set();
+        container.querySelectorAll('input[type=checkbox]').forEach(c => {
+          if (c.checked) pumpFilterActive.add(parseInt(c.dataset.ridx));
+        });
+      }
+      container.querySelectorAll('.pump-filter-row').forEach(row2 => {
+        const cb2 = row2.querySelector('input');
+        row2.classList.toggle('unchecked', !cb2.checked);
+      });
+      refreshMap();
+    });
+  });
+}
+
+function renderPumpList() {
+  const container = document.getElementById('pump-list');
+  container.innerHTML = '';
+
+  // Count districts per range
+  const counts = Array(PUMP_RANGES.length).fill(0);
+  if (allDistricts) {
+    allDistricts.forEach(d => {
+      counts[getPumpRangeIdx(d.id)]++;
+    });
+  }
+
+  PUMP_RANGES.forEach((range, idx) => {
+    const item = document.createElement('div');
+    item.className = 'pump-range-item';
+    item.innerHTML = `
+      <span class="pump-range-swatch" style="background:${range.color}" data-ridx="${idx}" title="Change color"></span>
+      <span class="pump-range-label">⛽ ${range.label}</span>
+      <span class="pump-range-count">${counts[idx]}</span>`;
+    container.appendChild(item);
+  });
+
+  container.querySelectorAll('.pump-range-swatch').forEach(sw => {
+    sw.addEventListener('click', e => {
+      e.stopPropagation();
+      colorPickerMode = 'pump';
+      colorPickerPumpIdx = parseInt(sw.dataset.ridx);
+      openColorPicker(null, sw);
+    });
+  });
+}
+
+function renderPumpLegend() {
+  const leg = document.getElementById('pump-legend');
+  leg.innerHTML = '<div class="pump-legend-title">⛽ Pump Population</div>';
+  PUMP_RANGES.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'pump-legend-row';
+    row.innerHTML = `<div class="pump-legend-dot" style="background:${r.color}"></div><span class="pump-legend-lbl">${r.label}</span>`;
+    leg.appendChild(row);
+  });
+  leg.classList.toggle('visible', currentView === 'pump');
+}
+
+function switchView(view) {
+  currentView = view;
+
+  // Toggle sidebar panels
+  document.getElementById('sp-sidebar-header').style.display  = view === 'sp'   ? 'flex'  : 'none';
+  document.getElementById('sp-list-wrap').style.display       = view === 'sp'   ? 'block' : 'none';
+  document.getElementById('pump-sidebar-header').style.display= view === 'pump' ? 'flex'  : 'none';
+  document.getElementById('pump-list-wrap').style.display     = view === 'pump' ? 'block' : 'none';
+
+  // Toggle legend + filter
+  document.getElementById('pump-legend').classList.toggle('visible', view === 'pump');
+  document.getElementById('pump-filter-section').classList.toggle('visible', view === 'pump');
+  if (view === 'pump') renderPumpFilter();
+  if (view === 'sp') { pumpFilterActive = null; } // reset filter when leaving pump view
+
+  // Highlight section only relevant for SP
+  const highlightSection = document.querySelector('.mode-toggle')?.closest('.sidebar-section'); if(highlightSection) highlightSection.style.display = view === 'sp' ? 'block' : 'none';
+
+  refreshMap();
+  if (view === 'pump') { renderPumpList(); renderPumpFilter(); }
+}
+
+function safeId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+function showTooltip(event, d) {
+  const tt    = document.getElementById('tooltip');
+  const id    = d.properties._id;
+  const spIdx = assignments[id];
+  const dd    = districtData[id] || {};
+
+  tt.querySelector('.tt-district').textContent = `${d.properties._district}, ${d.properties._state}`;
+  const dot  = document.getElementById('tt-dot');
+  const spEl = document.getElementById('tt-sp');
+  if (spIdx !== undefined) {
+    dot.style.background = spColors[spIdx];
+    spEl.textContent = spNames[spIdx];
+    document.getElementById('tt-sp-row').style.display = 'flex';
+  } else {
+    document.getElementById('tt-sp-row').style.display = 'none';
+  }
+  document.getElementById('tt-cust').textContent  = dd.customers !== undefined ? dd.customers : '—';
+  document.getElementById('tt-pumps').textContent = dd.pumps     !== undefined ? dd.pumps     : '—';
+
+  tt.style.display = 'block';
+  const wrap = document.getElementById('map-wrap');
+  const rect = wrap.getBoundingClientRect();
+  let lx = event.clientX - rect.left + 14;
+  let ly = event.clientY - rect.top  + 14;
+  if (lx + 230 > wrap.clientWidth)  lx = event.clientX - rect.left - 235;
+  if (ly + 120 > wrap.clientHeight) ly = event.clientY - rect.top  - 125;
+  tt.style.left = lx + 'px'; tt.style.top = ly + 'px';
+}
+function hideTooltip() { document.getElementById('tooltip').style.display = 'none'; }
+
+function openAssignModal(d) {
+  selectedDistrictId = d.properties._id;
+  pendingSpIndex = assignments[selectedDistrictId] ?? null;
+  document.getElementById('modal-district-name').textContent = d.properties._district;
+  document.getElementById('modal-state-name').textContent    = d.properties._state;
+
+  const dd = districtData[selectedDistrictId] || {};
+  const custInput  = document.getElementById('modal-customers');
+  const pumpsInput = document.getElementById('modal-pumps');
+  custInput.value  = dd.customers !== undefined ? dd.customers : '';
+  pumpsInput.value = dd.pumps     !== undefined ? dd.pumps     : '';
+
+  [custInput, pumpsInput].forEach(inp => {
+    inp.onfocus = () => inp.style.borderColor = 'var(--accent)';
+    inp.onblur  = () => inp.style.borderColor = 'var(--border2)';
+  });
+
+  document.getElementById('modal-data-fields').style.display = 'flex';
+  renderModalSPList();
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function renderModalSPList() {
+  const container = document.getElementById('modal-sp-list');
+  container.innerHTML = '';
+  const counts = {};
+  Object.values(assignments).forEach(idx => counts[idx] = (counts[idx]||0) + 1);
+  for (let i = 0; i < 50; i++) {
+    const btn = document.createElement('button');
+    btn.className = 'modal-sp-btn' + (pendingSpIndex === i ? ' selected' : '');
+    btn.innerHTML = `<span class="modal-sp-dot" style="background:${spColors[i]}"></span><span class="modal-sp-name">${spNames[i]}</span><span class="modal-sp-cnt">${counts[i]||0}</span>`;
+    btn.addEventListener('click', () => {
+      pendingSpIndex = i;
+      container.querySelectorAll('.modal-sp-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+    });
+    container.appendChild(btn);
+  }
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+  selectedDistrictId = null; pendingSpIndex = null;
+}
+
+function assignDistrict() {
+  if (!selectedDistrictId || pendingSpIndex === null) return;
+
+  const custVal  = document.getElementById('modal-customers').value.trim();
+  const pumpsVal = document.getElementById('modal-pumps').value.trim();
+
+  pushHistory({ type: 'assign', id: selectedDistrictId, prev: assignments[selectedDistrictId] });
+  assignments[selectedDistrictId] = pendingSpIndex;
+
+  const existing = districtData[selectedDistrictId] || {};
+  districtData[selectedDistrictId] = {
+    customers: custVal  !== '' ? custVal  : existing.customers,
+    pumps:     pumpsVal !== '' ? pumpsVal : existing.pumps,
+  };
+
+  saveToStorage(); closeModal(); refreshMap(); renderSPList();
+  notify(`Saved — ${spNames[pendingSpIndex]}`);
+}
+
+function unassignDistrict() {
+  if (!selectedDistrictId || assignments[selectedDistrictId] === undefined) { closeModal(); return; }
+  pushHistory({ type: 'assign', id: selectedDistrictId, prev: assignments[selectedDistrictId] });
+  delete assignments[selectedDistrictId];
+  saveToStorage(); closeModal(); refreshMap(); renderSPList();
+  notify('District unassigned');
+}
+
+function renderSPList() {
+  const container = document.getElementById('sp-list');
+  container.innerHTML = '';
+  const counts = {};
+  Object.values(assignments).forEach(idx => counts[idx] = (counts[idx]||0) + 1);
+
+  for (let i = 0; i < 50; i++) {
+    const cnt  = counts[i] || 0;
+    const item = document.createElement('div');
+    item.className = 'sp-item' + (activeSP === i ? ' active' : '');
+
+    item.innerHTML = `
+      <span class="sp-swatch" style="background:${spColors[i]}" data-sp="${i}" title="Change color"></span>
+      <span class="sp-name" id="sp-name-${i}">${spNames[i]}</span>
+      <div class="sp-actions">
+        <button class="sp-action-btn" data-edit="${i}" title="Rename">✏</button>
+      </div>
+      <span class="sp-count ${cnt>0?'has-districts':''}">${cnt}</span>`;
+
+    item.addEventListener('click', e => {
+      if (e.target.closest('.sp-swatch') || e.target.closest('.sp-action-btn')) return;
+      activeSP = (activeSP === i) ? null : i;
+      if (highlightMode === 'selected') refreshMap();
+      renderSPList();
+    });
+    container.appendChild(item);
+  }
+
+  container.querySelectorAll('.sp-swatch').forEach(sw => {
+    sw.addEventListener('click', e => {
+      e.stopPropagation();
+      colorPickerMode = 'sp';
+      colorPickerPumpIdx = null;
+      openColorPicker(parseInt(sw.dataset.sp), sw);
+    });
+  });
+
+  container.querySelectorAll('[data-edit]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.edit);
+      const nameEl = document.getElementById(`sp-name-${idx}`);
+      const current = spNames[idx];
+      nameEl.innerHTML = `<input type="text" value="${current}" maxlength="30" />`;
+      const inp = nameEl.querySelector('input');
+      inp.focus(); inp.select();
+      const finish = () => {
+        const val = inp.value.trim() || current;
+        spNames[idx] = val;
+        saveToStorage(); renderSPList();       };
+      inp.addEventListener('blur', finish);
+      inp.addEventListener('keydown', e2 => {
+        if (e2.key === 'Enter') inp.blur();
+        if (e2.key === 'Escape') { inp.value = current; inp.blur(); }
+      });
+    });
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  PHOTOSHOP-STYLE COLOR PICKER
+// ══════════════════════════════════════════════════════════
+const CP_PALETTES = {
+  basic: [
+    "#000000","#1a1a1a","#333333","#4d4d4d","#666666","#808080","#999999","#b3b3b3","#cccccc","#e6e6e6","#f2f2f2","#ffffff",
+    "#ff0000","#ff4000","#ff8000","#ffbf00","#ffff00","#80ff00","#00ff00","#00ff80","#00ffff","#0080ff","#0000ff","#8000ff",
+    "#ff00ff","#ff0080","#800000","#804000","#808000","#408000","#008000","#008040","#008080","#004080","#000080","#400080",
+    "#800040","#ff6666","#ffb366","#ffff66","#b3ff66","#66ff66","#66ffb3","#66ffff","#66b3ff","#6666ff","#b366ff","#ff66ff",
+    "#ff99aa","#ffcc99","#ffff99","#ccff99","#99ff99","#99ffcc","#99ffff","#99ccff","#9999ff","#cc99ff","#ff99ff","#ffd700"
+  ],
+  material: [
+    "#f44336","#e91e63","#9c27b0","#673ab7","#3f51b5","#2196f3","#03a9f4","#00bcd4","#009688","#4caf50","#8bc34a","#cddc39",
+    "#ffeb3b","#ffc107","#ff9800","#ff5722","#795548","#9e9e9e","#607d8b","#ef9a9a","#f48fb1","#ce93d8","#b39ddb","#9fa8da",
+    "#90caf9","#81d4fa","#80deea","#80cbc4","#a5d6a7","#c5e1a5","#e6ee9c","#fff59d","#ffe082","#ffcc80","#ffab91","#bcaaa4",
+    "#b71c1c","#880e4f","#4a148c","#311b92","#1a237e","#0d47a1","#01579b","#006064","#004d40","#1b5e20","#33691e","#827717",
+    "#f57f17","#e65100","#bf360c","#3e2723","#212121","#263238","#ff8a80","#ff80ab","#ea80fc","#b388ff","#82b1ff","#80d8ff"
+  ],
+  pastel: [
+    "#ffb3ba","#ffccba","#ffffba","#baffc9","#bae1ff","#e8baff","#ffd4e8","#d4f1ff","#d4ffd4","#ffd4d4","#fff4d4","#d4d4ff",
+    "#ff9eb5","#ffbc8b","#fffb8b","#a8ffb8","#a8d8ff","#d8a8ff","#ffb8e0","#b8eeff","#b8ffb8","#ffb8b8","#ffedb8","#b8b8ff",
+    "#ffc8d5","#ffd9b5","#fffcb5","#c0ffd0","#c0e8ff","#e0c0ff","#ffc8ec","#c0f4ff","#c0ffc0","#ffc0c0","#fff2c0","#c0c0ff",
+    "#ffe4ea","#ffeedd","#ffffdd","#ddffed","#ddf0ff","#f0ddff","#ffddf5","#ddfaff","#ddffdd","#ffdddd","#fff8dd","#ddddff",
+    "#f9d5e5","#fde9d4","#fefed4","#d4fed9","#d4e8fe","#e8d4fe","#f9d4ef","#d4f8fe","#d4fed4","#fed4d4","#fef6d4","#d4d4fe"
+  ]
+};
+
+let cpHue = 0, cpSat = 1, cpVal = 0.5;
+let cpRecentColors = [];
+let cpActiveTab = 'basic';
+let cpDragging = false;
+let colorPickerMode = 'sp';      // 'sp' or 'pump'
+let colorPickerPumpIdx = null;
+
+function hsvToHex(h, s, v) {
+  let r, g, b;
+  const i = Math.floor(h / 60) % 6;
+  const f = h / 60 - Math.floor(h / 60);
+  const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  [[r,g,b]=[v,t,p],[r,g,b]=[q,v,p],[r,g,b]=[p,v,t],[r,g,b]=[p,q,v],[r,g,b]=[t,p,v],[r,g,b]=[v,p,q]][i];
+  switch(i){case 0:r=v;g=t;b=p;break;case 1:r=q;g=v;b=p;break;case 2:r=p;g=v;b=t;break;case 3:r=p;g=q;b=v;break;case 4:r=t;g=p;b=v;break;case 5:r=v;g=p;b=q;break;}
+  return '#'+[r,g,b].map(x=>Math.round(x*255).toString(16).padStart(2,'0')).join('');
+}
+
+function hexToHsv(hex) {
+  hex = hex.replace('#','');
+  if(hex.length===3) hex=hex.split('').map(c=>c+c).join('');
+  const r=parseInt(hex.slice(0,2),16)/255,g=parseInt(hex.slice(2,4),16)/255,b=parseInt(hex.slice(4,6),16)/255;
+  const max=Math.max(r,g,b),min=Math.min(r,g,b),d=max-min;
+  let h=0,s=max===0?0:d/max,v=max;
+  if(d>0){
+    if(max===r) h=((g-b)/d)%6;
+    else if(max===g) h=(b-r)/d+2;
+    else h=(r-g)/d+4;
+    h=Math.round(h*60); if(h<0) h+=360;
+  }
+  return [h, s, v];
+}
+
+function cpUpdateAll() {
+  const hex = hsvToHex(cpHue, cpSat, cpVal);
+  // update spectrum bg
+  document.getElementById('cp-spectrum').style.backgroundColor = hsvToHex(cpHue, 1, 1);
+  // update cursor
+  const spec = document.getElementById('cp-spectrum');
+  const cur  = document.getElementById('cp-cursor');
+  cur.style.left = (cpSat * spec.offsetWidth)  + 'px';
+  cur.style.top  = ((1 - cpVal) * spec.offsetHeight) + 'px';
+  cur.style.borderColor = cpVal > 0.5 ? '#000' : '#fff';
+  // update preview
+  document.getElementById('cp-preview').style.background = hex;
+  // update hex
+  document.getElementById('cp-hex-input').value = hex.replace('#','').toUpperCase();
+  // highlight active swatch
+  document.querySelectorAll('.cp-swatch').forEach(s => {
+    s.classList.toggle('active-swatch', s.dataset.color && s.dataset.color.toLowerCase() === hex.toLowerCase());
+  });
+}
+
+function cpRenderPalette(tab) {
+  cpActiveTab = tab;
+  const grid = document.getElementById('cp-palette-grid');
+  grid.innerHTML = '';
+
+  let colors = [];
+  if (tab === 'recent') {
+    colors = [...cpRecentColors].reverse();
+    if (!colors.length) {
+      grid.innerHTML = '<div style="color:#656d76;font-size:11px;padding:4px 0;grid-column:1/-1">No recent colors yet</div>';
+      return;
+    }
+  } else {
+    colors = CP_PALETTES[tab] || [];
+  }
+
+  const currentHex = hsvToHex(cpHue, cpSat, cpVal);
+  colors.forEach(col => {
+    const d = document.createElement('div');
+    d.className = 'cp-swatch' + (col.toLowerCase() === currentHex.toLowerCase() ? ' active-swatch' : '');
+    d.style.background = col;
+    d.dataset.color = col;
+    d.title = col;
+    d.addEventListener('click', () => {
+      const [h,s,v] = hexToHsv(col);
+      cpHue = h; cpSat = s; cpVal = v;
+      document.getElementById('cp-hue-slider').value = h;
+      cpUpdateAll();
+    });
+    grid.appendChild(d);
+  });
+}
+
+function openColorPicker(spIdx, anchor) {
+  colorPickerTarget = spIdx;
+  const picker = document.getElementById('color-picker');
+
+  // Set initial state from current color
+  let currentColor = '#4e9af1';
+  if (colorPickerMode === 'pump' && colorPickerPumpIdx !== null) {
+    currentColor = PUMP_RANGES[colorPickerPumpIdx].color;
+  } else if (spIdx !== null && spIdx !== undefined) {
+    currentColor = spColors[spIdx] || '#4e9af1';
+  }
+  const [h, s, v] = hexToHsv(currentColor);
+  cpHue = h; cpSat = s; cpVal = v;
+
+  // Set hue slider
+  document.getElementById('cp-hue-slider').value = h;
+
+  // Render default tab
+  cpRenderPalette(cpActiveTab);
+
+  // Set up spectrum drag
+  const spec = document.getElementById('cp-spectrum');
+
+  function pickFromSpectrum(e) {
+    const rect = spec.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top)  / rect.height));
+    cpSat = x; cpVal = 1 - y;
+    cpUpdateAll();
+  }
+  spec.onmousedown = e => {
+    cpDragging = true; pickFromSpectrum(e);
+    const up = () => { cpDragging = false; document.removeEventListener('mouseup', up); document.removeEventListener('mousemove', mv); };
+    const mv = e2 => { if(cpDragging) pickFromSpectrum(e2); };
+    document.addEventListener('mouseup', up);
+    document.addEventListener('mousemove', mv);
+  };
+
+  // Hue slider
+  document.getElementById('cp-hue-slider').oninput = e => {
+    cpHue = parseInt(e.target.value);
+    cpUpdateAll();
+    cpRenderPalette(cpActiveTab);
+  };
+
+  // Apply button
+  document.getElementById('cp-apply').onclick = () => {
+    const hex = document.getElementById('cp-hex-input').value.trim();
+    const full = hex.startsWith('#') ? hex : '#' + hex;
+    if (/^#[0-9a-fA-F]{6}$/.test(full)) {
+      const [h,s,v] = hexToHsv(full);
+      cpHue=h; cpSat=s; cpVal=v;
+      document.getElementById('cp-hue-slider').value=h;
+      cpUpdateAll();
+    }
+  };
+
+  // Hex input enter
+  document.getElementById('cp-hex-input').onkeydown = e => {
+    if (e.key === 'Enter') document.getElementById('cp-apply').onclick();
+  };
+
+  // Tab switching
+  document.querySelectorAll('.cp-swatch-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.cp-swatch-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      cpRenderPalette(tab.dataset.tab);
+    };
+  });
+
+  cpUpdateAll();
+
+  // Position
+  const rect = anchor.getBoundingClientRect();
+  const top  = rect.bottom + 6;
+  const left = Math.min(rect.left, window.innerWidth - 295);
+  picker.style.top  = Math.min(top,  window.innerHeight - 520) + 'px';
+  picker.style.left = Math.max(8, left) + 'px';
+  picker.classList.add('open');
+}
+
+function cpConfirmColor() {
+  const hex = hsvToHex(cpHue, cpSat, cpVal);
+  // Add to recent
+  cpRecentColors = cpRecentColors.filter(c => c.toLowerCase() !== hex.toLowerCase());
+  cpRecentColors.push(hex);
+  if (cpRecentColors.length > 24) cpRecentColors.shift();
+
+  if (colorPickerMode === 'pump' && colorPickerPumpIdx !== null) {
+    PUMP_RANGES[colorPickerPumpIdx].color = hex;
+    refreshMap();
+    renderPumpList();
+    renderPumpLegend();
+    renderPumpFilter();
+  } else if (colorPickerMode === 'sp' && colorPickerTarget !== null) {
+    spColors[colorPickerTarget] = hex;
+    saveToStorage(); refreshMap(); renderSPList();
+  }
+  document.getElementById('color-picker').classList.remove('open');
+}
+
+function updateStats() {
+  const total    = allDistricts.length;
+  const assigned = Object.keys(assignments).length;
+  document.getElementById('stat-assigned').textContent = assigned;
+  document.getElementById('stat-coverage').textContent = total ? Math.round(assigned/total*100)+'%' : '0%';
+}
+
+function setupSearch() {
+  const inp = document.getElementById('search-input');
+  const res = document.getElementById('search-results');
+
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    if (!q) { res.classList.remove('open'); return; }
+    const matches = allDistricts.filter(d =>
+      d.name.toLowerCase().includes(q) || d.state.toLowerCase().includes(q)
+    ).slice(0, 15);
+    if (!matches.length) { res.classList.remove('open'); return; }
+    res.innerHTML = matches.map(d => `
+      <div class="search-result-item" data-id="${d.id}">
+        <div class="sr-district">${d.name}</div>
+        <div class="sr-state">${d.state}</div>
+      </div>`).join('');
+    res.classList.add('open');
+    res.querySelectorAll('.search-result-item').forEach(item => {
+      item.addEventListener('click', () => {
+        zoomToDistrict(item.dataset.id);
+        res.classList.remove('open'); inp.value = '';
+      });
+    });
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#search-wrap')) res.classList.remove('open');
+  });
+}
+
+function zoomToDistrict(id) {
+  if (!gSel) return;
+  const feat = geoData.features.find(f => f.properties._id === id);
+  if (!feat) return;
+  const svgEl = document.getElementById('map-svg');
+  const W = svgEl.clientWidth, H = svgEl.clientHeight;
+  const [[x0,y0],[x1,y1]] = pathGen.bounds(feat);
+  const dx = x1-x0, dy = y1-y0;
+  const scale = Math.min(12, 0.85/Math.max(dx/W, dy/H));
+  const cx = (x0+x1)/2, cy = (y0+y1)/2;
+  svgSel.transition().duration(700).call(zoom.transform,
+    d3.zoomIdentity.translate(W/2, H/2).scale(scale).translate(-cx, -cy));
+  setTimeout(() => {
+    const el = gSel.select('#dp-' + safeId(id));
+    if (!el.empty()) {
+      el.attr('stroke', '#fff').attr('stroke-width', '2');
+      setTimeout(() => el.attr('stroke', 'rgba(255,255,255,0.15)').attr('stroke-width', '0.5'), 1200);
+    }
+  }, 750);
+}
+
+function zoomToState(stateName) {
+  if (!gSel || !stateName) { resetZoom(); return; }
+  const feats = geoData.features.filter(f => f.properties._state === stateName);
+  if (!feats.length) return;
+  const svgEl = document.getElementById('map-svg');
+  const W = svgEl.clientWidth, H = svgEl.clientHeight;
+  const [[x0,y0],[x1,y1]] = pathGen.bounds({ type: 'FeatureCollection', features: feats });
+  const dx = x1-x0, dy = y1-y0;
+  const scale = Math.min(18, 0.82/Math.max(dx/W, dy/H));
+  const cx = (x0+x1)/2, cy = (y0+y1)/2;
+  svgSel.transition().duration(700).call(zoom.transform,
+    d3.zoomIdentity.translate(W/2, H/2).scale(scale).translate(-cx, -cy));
+}
+
+function resetZoom() {
+  svgSel.transition().duration(550).call(zoom.transform, d3.zoomIdentity);
+}
+
+function openBulkAssign() {
+  if (!currentState) { notify('Select a state first to bulk-assign its districts'); return; }
+  const stateDistricts = allDistricts.filter(d => d.state === currentState);
+  document.getElementById('modal-district-name').textContent = `Bulk: ${currentState}`;
+  document.getElementById('modal-state-name').textContent    = `${stateDistricts.length} districts`;
+  document.getElementById('modal-data-fields').style.display = 'none';
+  document.getElementById('modal-assign').textContent = 'Assign All';
+  pendingSpIndex = null;
+  selectedDistrictId = '__bulk__';
+  renderModalSPList();
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function doBulkAssign() {
+  if (selectedDistrictId !== '__bulk__' || pendingSpIndex === null) { assignDistrict(); return; }
+  const stateDistricts = allDistricts.filter(d => d.state === currentState);
+  const changes = stateDistricts.map(d => ({ id: d.id, prev: assignments[d.id] }));
+  pushHistory({ type: 'bulk', changes });
+  stateDistricts.forEach(d => { assignments[d.id] = pendingSpIndex; });
+  saveToStorage(); closeModal(); refreshMap(); renderSPList();
+  notify(`Assigned ${stateDistricts.length} districts to ${spNames[pendingSpIndex]}`);
+}
+
+function processExcel(file) {
+  showProcessing('Reading Excel file…');
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data  = new Uint8Array(e.target.result);
+      const wb    = XLSX.read(data, { type: 'array' });
+      const ws    = wb.Sheets[wb.SheetNames[0]];
+      const rows  = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      if (!rows.length) { hideProcessing(); notify('Excel file is empty'); return; }
+      showProcessing(`Matching ${rows.length} rows to districts…`);
+
+      const getCol = (row, ...candidates) => {
+        for (const c of candidates) {
+          const key = Object.keys(row).find(k => k.toLowerCase().trim() === c.toLowerCase());
+          if (key && row[key] !== '') return String(row[key]).trim();
+        }
+        return '';
+      };
+
+      const spNameMap = {};
+      for (let i = 0; i < 50; i++) { spNameMap[normalize(spNames[i])] = i; }
+
+      let matched = 0, unmatched = 0;
+      const bulkChanges = [];
+
+      rows.forEach(row => {
+        const districtRaw = getCol(row, 'district', 'district_name', 'dist', 'district name');
+        const stateRaw    = getCol(row, 'state', 'state_name', 'st');
+        const spRaw       = getCol(row, 'salesperson', 'sales person', 'sp', 'rep', 'salesman', 'name');
+        const customers   = getCol(row, 'customers', 'customer', 'cust', 'c');
+        const pumps       = getCol(row, 'pumps', 'pump', 'p');
+        const colorRaw    = getCol(row, 'color', 'colour', 'fill');
+
+        if (!districtRaw) return;
+        const normDist  = normalize(districtRaw);
+        const normState = normalize(stateRaw);
+
+        let candidates = districtMap[normDist] || [];
+
+        if (normState && candidates.length > 1) {
+          const stateFiltered = candidates.filter(id => {
+            const d = allDistricts.find(x => x.id === id);
+            return d && d.normState === normState;
+          });
+          if (stateFiltered.length) candidates = stateFiltered;
+        }
+
+        if (!candidates.length) {
+          candidates = allDistricts.filter(d => {
+            const dn = d.normName;
+            const rn = normDist;
+            if (dn.includes(rn) || rn.includes(dn)) return true;
+            if (rn.length >= 5 && dn.length >= 5 && dn.substring(0, 5) === rn.substring(0, 5)) return true;
+            const strippedDn = dn.replace(/(nagar|puram|garh|abad|pur|city|rural|urban)$/g, '');
+            const strippedRn = rn.replace(/(nagar|puram|garh|abad|pur|city|rural|urban)$/g, '');
+            if (strippedDn === strippedRn && strippedDn.length > 3) return true;
+            return false;
+          }).map(d => d.id);
+
+          if (normState && candidates.length > 1) {
+            candidates = candidates.filter(id => {
+              const d = allDistricts.find(x => x.id === id);
+              const ds = d.normState;
+              return d && (ds.includes(normState) || normState.includes(ds) || 
+                     (ds.length >= 4 && normState.length >= 4 && ds.substring(0,4) === normState.substring(0,4)));
+            });
+          }
+        }
+
+        if (!candidates.length) { unmatched++; return; }
+
+        candidates.forEach(distId => {
+          let spIdx = null;
+          if (spRaw) {
+            const normSp = normalize(spRaw);
+            if (spNameMap[normSp] !== undefined) {
+              spIdx = spNameMap[normSp];
+            } else {
+              const existing = Object.entries(spNames).find(([,v]) => v === spRaw);
+              if (existing) spIdx = parseInt(existing[0]);
+              else {
+                const usedIdxs = new Set(Object.values(spNameMap));
+                for (let i = 0; i < 50; i++) {
+                  if (!usedIdxs.has(i)) {
+                    spNames[i] = spRaw;
+                    spNameMap[normalize(spRaw)] = i;
+                    spIdx = i;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+
+          bulkChanges.push({ id: distId, prev: assignments[distId] });
+
+          if (spIdx !== null) {
+            assignments[distId] = spIdx;
+            if (colorRaw && /^#[0-9a-fA-F]{3,6}$/.test(colorRaw)) {
+              spColors[spIdx] = colorRaw;
+            }
+          }
+
+          districtData[distId] = {
+            customers: customers !== '' ? customers : undefined,
+            pumps:     pumps     !== '' ? pumps     : undefined,
+          };
+        });
+        matched++;
+      });
+
+      if (bulkChanges.length) pushHistory({ type: 'bulk', changes: bulkChanges });
+
+      saveToStorage();
+      hideProcessing();
+      refreshMap();
+      renderSPList();
+      document.getElementById('stat-excel').textContent = rows.length;
+      notify(`Excel imported: ${matched} matched, ${unmatched} unmatched`);
+    } catch(err) {
+      hideProcessing();
+      notify('Excel parse error: ' + err.message);
+      console.error(err);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function showProcessing(msg) {
+  document.getElementById('proc-text').textContent = msg || 'Processing…';
+  document.getElementById('processing-overlay').classList.add('open');
+}
+function hideProcessing() {
+  document.getElementById('processing-overlay').classList.remove('open');
+}
+
+let notifTimer;
+function notify(msg) {
+  const el = document.getElementById('notif');
+  el.textContent = msg; el.style.display = 'block';
+  clearTimeout(notifTimer);
+  notifTimer = setTimeout(() => { el.style.display = 'none'; }, 2800);
+}
+
+// ══════════════════════════════════════════════════════════
+//  DOWNLOAD PNG
+// ══════════════════════════════════════════════════════════
+function downloadPNG() {
+  notify('Preparing PNG…');
+  const svgEl = document.getElementById('map-svg');
+  const W = svgEl.clientWidth, H = svgEl.clientHeight;
+
+  // Serialize SVG
+  const serializer = new XMLSerializer();
+  let svgStr = serializer.serializeToString(svgEl);
+
+  // Ensure proper namespace
+  if (!svgStr.includes('xmlns=')) {
+    svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+
+  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const img  = new Image();
+
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    const scale  = 2; // 2x for retina quality
+    canvas.width  = W * scale;
+    canvas.height = H * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(img, 0, 0, W, H);
+    URL.revokeObjectURL(url);
+
+    canvas.toBlob(pngBlob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(pngBlob);
+      a.download = 'TerritoryIQ_India_' + new Date().toISOString().slice(0,10) + '.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      notify('PNG downloaded!');
+    }, 'image/png');
+  };
+
+  img.onerror = () => { notify('PNG export failed'); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+// ══════════════════════════════════════════════════════════
+//  DOWNLOAD EXCEL
+// ══════════════════════════════════════════════════════════
+function downloadExcel() {
+  if (!allDistricts.length) { notify('Map not loaded yet'); return; }
+
+  const rows = [['District', 'State', 'Salesperson', 'Customers', 'Pumps']];
+
+  allDistricts.forEach(d => {
+    const spIdx = assignments[d.id];
+    const dd    = districtData[d.id] || {};
+    rows.push([
+      d.name,
+      d.state,
+      spIdx !== undefined ? (spNames[spIdx] || '') : '',
+      dd.customers !== undefined && dd.customers !== '' ? dd.customers : '',
+      dd.pumps     !== undefined && dd.pumps     !== '' ? dd.pumps     : '',
+    ]);
+  });
+
+  // Build worksheet manually (tab-separated CSV wrapped as XLS for broad compatibility)
+  // Use SheetJS (already loaded via XLSX)
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  // Column widths
+  ws['!cols'] = [
+    { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 14 }, { wch: 10 }
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Territory Data');
+  XLSX.writeFile(wb, 'TerritoryIQ_India_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  notify('Excel downloaded!');
+}
+
+
+function wireEvents() {
+  document.getElementById('modal-assign').addEventListener('click', () => {
+    if (selectedDistrictId === '__bulk__') { doBulkAssign(); return; }
+    if (selectedDistrictId === '__export__') { closeModal(); return; }
+    if (pendingSpIndex === null && assignments[selectedDistrictId] !== undefined) {
+      pendingSpIndex = assignments[selectedDistrictId];
+    }
+    assignDistrict();
+  });
+  document.getElementById('modal-cancel').addEventListener('click', closeModal);
+  document.getElementById('modal-unassign').addEventListener('click', () => {
+    if (selectedDistrictId === '__bulk__' || selectedDistrictId === '__export__') { closeModal(); return; }
+    unassignDistrict();
+  });
+  document.getElementById('modal-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('modal-overlay')) closeModal();
+  });
+
+  document.getElementById('pf-all').addEventListener('click', () => {
+    pumpFilterActive = null;
+    renderPumpFilter();
+    refreshMap();
+  });
+  document.getElementById('pf-none').addEventListener('click', () => {
+    pumpFilterActive = new Set(); // empty set = nothing shown
+    renderPumpFilter();
+    refreshMap();
+  });
+
+  document.querySelectorAll('.view-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      switchView(tab.dataset.view);
+    });
+  });
+
+  document.getElementById('zoom-in').addEventListener('click',    () => svgSel.transition().call(zoom.scaleBy, 1.5));
+  document.getElementById('zoom-out').addEventListener('click',   () => svgSel.transition().call(zoom.scaleBy, 1/1.5));
+  document.getElementById('zoom-reset').addEventListener('click', resetZoom);
+
+  document.getElementById('state-select').addEventListener('change', e => {
+    currentState = e.target.value; zoomToState(currentState);
+  });
+
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      highlightMode = btn.dataset.mode;
+      refreshMap();
+    });
+  });
+
+  document.getElementById('undo-btn').addEventListener('click', undo);
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    if (!confirm('Reset ALL assignments? Cannot be undone.')) return;
+    history.length = 0; assignments = {}; districtData = {};
+    saveToStorage(); refreshMap(); renderSPList();
+    document.getElementById('undo-btn').disabled = true;
+    document.getElementById('stat-excel').textContent = '—';
+    notify('All assignments reset');
+  });
+
+  document.getElementById('excel-btn').addEventListener('click', () => document.getElementById('excel-file').click());
+  document.getElementById('excel-file').addEventListener('change', e => {
+    if (e.target.files[0]) { processExcel(e.target.files[0]); e.target.value = ''; }
+  });
+
+  document.getElementById('bulk-assign-btn').addEventListener('click', openBulkAssign);
+
+  document.getElementById('dl-png-btn').addEventListener('click', downloadPNG);
+  document.getElementById('dl-excel-btn').addEventListener('click', downloadExcel);
+
+  document.getElementById('color-cancel').addEventListener('click', () => document.getElementById('color-picker').classList.remove('open'));
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#color-picker') && !e.target.closest('.sp-swatch'))
+      document.getElementById('color-picker').classList.remove('open');
+  });
+
+  // Double-click spectrum or click Apply Swatch to confirm color
+  document.getElementById('cp-spectrum').addEventListener('dblclick', cpConfirmColor);
+
+  // Add a "Use Color" confirm button logic inside the picker
+  // Clicking a swatch sets but doesn't save; we auto-confirm on swatch click for convenience
+  document.getElementById('cp-palette-grid').addEventListener('click', e => {
+    if (e.target.classList.contains('cp-swatch')) {
+      setTimeout(cpConfirmColor, 80);
+    }
+  });
+
+  document.getElementById('cp-apply').addEventListener('click', () => {
+    setTimeout(cpConfirmColor, 80);
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeModal(); document.getElementById('color-picker').classList.remove('open'); }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  LIVE SYNC  —  Shared GitHub Gist
+//
+//  GIST_ID is hardcoded → everyone reads from the same source
+//  Only the map owner needs a token (to save)
+//  Everyone else auto-loads on open + polls every 10s
+// ══════════════════════════════════════════════════════════
+const GIST_ID   = 'e1ed1dbea82bb0704a4d520d5743a3cc';   // ← your gist
+const GIST_FILE = 'territoryiq_live.json';
+const POLL_MS   = 10000;
+
+let _saveTimer  = null;
+let _pollTimer  = null;
+let _lastTs     = 0;
+let _isSaving   = false;
+
+// ── helpers ──────────────────────────────────────────────
+function getToken() {
+  return localStorage.getItem('tiq2_admin_token') || null;
+}
+function setToken(t) {
+  localStorage.setItem('tiq2_admin_token', t);
+}
+
+function setSyncPill(state, msg) {
+  const pill = document.getElementById('sync-pill');
+  const txt  = document.getElementById('sync-text');
+  pill.className = state;   // live | saving | error | ''
+  txt.textContent = msg;
+}
+
+function buildPayload() {
+  return JSON.stringify({
+    v: 2, ts: Date.now(),
+    assignments, spColors, spNames, districtData
+  });
+}
+
+function applyPayload(raw) {
+  try {
+    const d = JSON.parse(raw);
+    if (!d || d.v !== 2) return false;
+    // Only apply if newer than what we last applied
+    if (d.ts <= _lastTs) return false;
+    _lastTs      = d.ts;
+    assignments  = d.assignments  || {};
+    spColors     = d.spColors     || spColors;
+    spNames      = d.spNames      || spNames;
+    districtData = d.districtData || {};
+    // persist locally too
+    localStorage.setItem('tiq2_assignments',  JSON.stringify(assignments));
+    localStorage.setItem('tiq2_spColors',     JSON.stringify(spColors));
+    localStorage.setItem('tiq2_spNames',      JSON.stringify(spNames));
+    localStorage.setItem('tiq2_districtData', JSON.stringify(districtData));
+    localStorage.setItem('tiq2_last_ts',      String(d.ts));
+    refreshMap();
+    renderSPList();
+    return true;
+  } catch(e) { return false; }
+}
+
+// ── PUBLIC load (no token needed — gist is readable) ─────
+async function publicLoad(showToast) {
+  try {
+    // Use the raw public API — no auth needed for reading a gist
+    const res  = await fetch(`https://api.github.com/gists/${GIST_ID}`);
+    if (!res.ok) throw new Error('Could not reach Gist');
+    const data = await res.json();
+    const raw  = data.files?.[GIST_FILE]?.content;
+    if (!raw) return false;
+    const applied = applyPayload(raw);
+    if (applied && showToast) showUpdateToast();
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+// ── ADMIN save (token required) ──────────────────────────
+function scheduleCloudSave() {
+  if (!getToken()) return;           // viewers don't save
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(doCloudSave, 1500);
+  setSyncPill('saving', 'Saving…');
+}
+
+async function doCloudSave() {
+  const token = getToken();
+  if (!token || _isSaving) return;
+  _isSaving = true;
+  try {
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method:  'PATCH',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ files: { [GIST_FILE]: { content: buildPayload() } } })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        // bad token — clear it
+        localStorage.removeItem('tiq2_admin_token');
+        setSyncPill('error', 'Bad token — click to fix');
+        notify('❌ Token invalid. Click the sync pill to re-enter.');
+        return;
+      }
+      throw new Error(data.message || 'GitHub error');
+    }
+    const t = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+    setSyncPill('live', `● Live · saved ${t}`);
+  } catch(err) {
+    setSyncPill('error', 'Save failed — retrying');
+    setTimeout(doCloudSave, 6000);
+  } finally {
+    _isSaving = false;
+  }
+}
+
+// ── Polling (everyone polls, only admin saves) ────────────
+function startPolling() {
+  clearInterval(_pollTimer);
+  _pollTimer = setInterval(async () => {
+    const changed = await publicLoad(false);
+    if (changed) {
+      showUpdateToast();
+      const t = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+      if (!getToken()) setSyncPill('live', `● Live · updated ${t}`);
+    }
+  }, POLL_MS);
+}
+
+function showUpdateToast() {
+  const el = document.getElementById('update-toast');
+  el.style.display = 'block';
+  clearTimeout(el._hide);
+  el._hide = setTimeout(() => el.style.display = 'none', 3000);
+}
+
+// ── Token modal wiring ────────────────────────────────────
+function wireSync() {
+  // Clicking the pill: admin opens token modal, viewers see info
+  document.getElementById('sync-pill').addEventListener('click', () => {
+    document.getElementById('admin-token-input').value = getToken() || '';
+    document.getElementById('token-overlay').classList.add('open');
+  });
+  document.getElementById('token-cancel-btn').addEventListener('click', () => {
+    document.getElementById('token-overlay').classList.remove('open');
+  });
+  document.getElementById('token-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('token-overlay'))
+      document.getElementById('token-overlay').classList.remove('open');
+  });
+  document.getElementById('token-save-btn').addEventListener('click', () => {
+    const t = document.getElementById('admin-token-input').value.trim();
+    if (!t) { notify('⚠️ Please enter your GitHub token'); return; }
+    setToken(t);
+    document.getElementById('token-overlay').classList.remove('open');
+    notify('✅ Token saved — you can now save changes.');
+    setSyncPill('saving', 'Saving…');
+    doCloudSave();
+  });
+
+  // ── On startup: load from gist first, then start polling ─
+  _lastTs = parseInt(localStorage.getItem('tiq2_last_ts') || '0');
+
+  setSyncPill('saving', 'Loading map…');
+  publicLoad(false).then(ok => {
+    if (ok) {
+      const t = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+      setSyncPill('live', `● Live · loaded ${t}`);
+    } else {
+      setSyncPill('error', 'Could not load — using local data');
+    }
+    startPolling();
+
+    // If admin token exists, show ready state
+    if (getToken()) {
+      setSyncPill('live', '● Live · admin mode');
+    }
+  });
+}
+
+(async () => {
+  initSP();
+  wireEvents();
+  wireSync();
+  setupSearch();
+  initMap();
+})();
+</script>
+</body>
+</html>
